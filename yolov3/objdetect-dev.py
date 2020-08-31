@@ -7,6 +7,7 @@ import argparse
 import time
 import os
 import subprocess
+import pyrealsense2 as rs
 from math import atan2, cos, sin, sqrt, pi
 
 #------------------------------------------------#
@@ -168,7 +169,7 @@ def getOrientation(pts, img):
 
     return(focus, focusX, focusY)
 
-def ObjDetectImg(image_path, layer_names, net):
+def ObjDetectImg(img, layer_names, net):
 
     #get indiv colours for each class
     np.random.seed(42)
@@ -177,13 +178,7 @@ def ObjDetectImg(image_path, layer_names, net):
     layer_names = net.getLayerNames()
     layer_names = [layer_names[i[0] - 1] for i in net.getUnconnectedOutLayers()]
 
-    #set the iamge path, makes it easy for reading img in
-    image_path = args["image"]
-
-    #read img in
-    color_image = cv2.imread(image_path)
-    color_image = cv2.resize(color_image, (640,480))
-    
+    color_image = img
     #get img dimensions
     (h, w, c) = color_image.shape
 
@@ -243,29 +238,28 @@ def ObjDetectImg(image_path, layer_names, net):
             cv2.putText(color_image, text, (x, y + 30), font, 3, color, 3)
 
     #------------------- IDENTIFY BANANA WE WANT TO GO FOR -------------------#
+    if resultant is not None:
+        focus = img
 
-    focus = cv2.imread(image_path)
-    focus = cv2.resize(focus, (640, 480))
+        focusedIndex = resultant.index(min(resultant)) #this returns the index of the object that we want to focus
+        focusX, focusY = posVal[focusedIndex] #get the centre co-ords for the focused object
+        rho, phi = cart2pol(focusX,focusY) #convert to polar co-ords
+        cv2.line(focus, (focusX+320,focusY+240), (320,240), (0,0,0)) #draw a line on the image from the centre of the frame to the centre of the focused box
 
-    focusedIndex = resultant.index(min(resultant)) #this returns the index of the object that we want to focus
-    focusX, focusY = posVal[focusedIndex] #get the centre co-ords for the focused object
-    rho, phi = cart2pol(focusX,focusY) #convert to polar co-ords
-    cv2.line(focus, (focusX+320,focusY+240), (320,240), (0,0,0)) #draw a line on the image from the centre of the frame to the centre of the focused box
+        x, y, w, h = boxes[focusedIndex]
+        label = str(LABELS[class_ids[focusedIndex]])
+        color = colors[focusedIndex]
+        cv2.rectangle(focus, (x, y), (x + w, y + h), color, 2)
+        text = "{}: {:.4f}".format(LABELS[class_ids[focusedIndex]], confidences[focusedIndex])
 
-    x, y, w, h = boxes[focusedIndex]
-    label = str(LABELS[class_ids[focusedIndex]])
-    color = colors[focusedIndex]
-    cv2.rectangle(focus, (x, y), (x + w, y + h), color, 2)
-    text = "{}: {:.4f}".format(LABELS[class_ids[focusedIndex]], confidences[focusedIndex])
+        cv2.putText(focus, text, (x, y + 30), font, 3, color, 3)
 
-    cv2.putText(focus, text, (x, y + 30), font, 3, color, 3)
+        print('[CALC] Polar Co-ords of focused object is {:.6f} < {:.6f}'.format(rho, phi*180/pi))
 
-    print('[CALC] Polar Co-ords of focused object is {:.6f} < {:.6f}'.format(rho, phi*180/pi))
-
-    cv2.imshow("Focused object", focus)
-    cv2.imshow('Detections', color_image)
-
-    return(x, y, w, h, rho)
+        #cv2.imshow("Focused object", focus)
+        #cv2.imshow('Detections', color_image)
+        
+        return(x, y, w, h, rho)
 
 
 #-------------------------------------------------#    
@@ -274,7 +268,7 @@ def ObjDetectImg(image_path, layer_names, net):
 
 
 ap = argparse.ArgumentParser()
-ap.add_argument("-i", "--image", required=True,
+ap.add_argument("-i", "--image", required=False,
 	help="path to input image")
 
 args = vars(ap.parse_args())
@@ -288,7 +282,6 @@ cfg_path = "cfg/yolov3.cfg"
 print("[INFO] CFG read from:", cfg_path)
 weights_path = "weights/yolov3.weights"
 print("[INFO] Weights read from:", weights_path)
-image_path = args["image"]
 
 
 
@@ -314,7 +307,11 @@ layer_names = [layer_names[i[0] - 1] for i in net.getUnconnectedOutLayers()]
 
 if args["image"] is not None:
 
-    x, y, w, h, rho = ObjDetectImg(image_path, layer_names, net)
+    image_path = args["image"]
+    img = cv2.imread(image_path)
+    img = cv2.resize(img, (640,480))
+
+    x, y, w, h, rho = ObjDetectImg(img, layer_names, net)
 
     if rho > 50:
         print("[RESULT] Command 1, servo to object...")
@@ -380,67 +377,65 @@ else: #if NO image has been parsed, we want to do webcam
     config.enable_stream(rs.stream.color, 640, 480, rs.format.bgr8, 30)
     # Start streaming
     pipeline.start(config)
-    frames = pipeline.wait_for_frames()
-    color_frame = frames.get_color_frame()
-    color_image = np.asanyarray(color_frame.get_data())
-    (h, w, c) = color_image.shape #get height width and channels
+    
 
     try:
         while True:
 
-            blob = cv2.dnn.blobFromImage(cv2.resize(color_image, (416, 416)), 0.007843, (416, 416), 127.5,
-                swapRB=True, crop=False) #make a blob
+            frames = pipeline.wait_for_frames()
+            color_frame = frames.get_color_frame()
+            color_image = np.asanyarray(color_frame.get_data())
+            (h, w, c) = color_image.shape #get height width and channels
+           
 
-            net.setInput(blob)
             start = time.time()
 
-            outs = net.forward(output_layers)
+            x, y, w, h, rho = ObjDetectImg(color_image, layer_names, net)
+
+            img = color_image
+            crop = img[y:y+h, x:x+w]
+            
+            # Convert image to hsv
+            hsv = cv2.cvtColor(crop, cv2.COLOR_BGR2HSV) 
+            #lets get some values for our hsv thresholds, what colours should we play between?
+
+            weaker = np.array([20, 100, 100]) #kind of a pale yellow colour
+            stronger = np.array([30, 255, 255]) #strong, vibrant yellow.
+
+            #make a mask
+
+            mask = cv2.inRange(hsv, weaker, stronger) 
+            _, contours, _ = cv2.findContours(mask, cv2.RETR_LIST, cv2.CHAIN_APPROX_NONE) #mask to bw if using
+
+            for i, c in enumerate(contours):
+                # Calculate the area of each contour
+                area = cv2.contourArea(c)
+                # Ignore contours that are too small or too large
+                if area < 1e3 or 1e5 < area:
+                    continue
+
+                #   Draw each contour only for visualisation purposes
+                cv2.drawContours(crop, contours, i, (0, 0, 255), 2)
+                # Find the orientation of each shape
+                #angle = getOrientation(c, crop)
+                #print("Orientation is", angle*(180/pi))
+
+            #cmd = "3 {:.3f}#".format(angle)
+            #cmd = cmd.encode(encoding='UTF-8')
+            #p.stdin.write(cmd)
+            #p.stdin.flush()
             end = time.time()
+            seconds = start - end
+            print("[INFO]: ", seconds, "time taken.")
 
-            print("[INFO] YOLO took {:.6f} seconds".format(end - start))
-
-
-            class_ids = []
-            confidences = []
-            boxes = []
-            # loop over the detections
-            for out in outs:
-                for detection in out:
-                    scores = detection[5:]
-                    class_id = np.argmax(scores)
-                    confidence = scores[class_id]
-
-                    if confidence > 0.7:
-                    #object detected!!!!
-                        center_x = int(detection[0]*w)
-                        center_y = int(detection[1]*h)
-                        w = int(detection[2] * w)
-                        h = int(detection[3] * h)
-
-                        # Rectangle coordinates
-                        x = int(center_x - w / 2)
-                        y = int(center_y - h / 2)
-                        boxes.append([x, y, w, h])
-                        confidences.append(float(confidence))
-                        class_ids.append(class_id)
-
-            indexes = cv2.dnn.NMSBoxes(boxes, confidences, 0.5, 0.4)
-
-            print(indexes)
-            font = cv2.FONT_HERSHEY_PLAIN
-            for i in range(len(boxes)):
-                if i in indexes:
-                    x, y, w, h = boxes[i]
-                    label = str(classes[class_ids[i]])
-                    color = colors[i]
-                    cv2.rectangle(color_image, (x, y), (x + w, y + h), color, 2)
-                    cv2.putText(color_image, label, (x, y + 30), font, 3, color, 3)
-
+            #cv2.imshow("ori", img)
+            
             cv2.namedWindow('RealSense', cv2.WINDOW_AUTOSIZE)
             cv2.imshow('RealSense', color_image)
-            cv2.waitKey(0)
 
-    finally:
 
+    except KeyboardInterrupt:
         # Stop streaming
+        print("\n [INFO]: Closing...")
         pipeline.stop()
+        cv2.destroyAllWindows()
