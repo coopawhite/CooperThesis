@@ -256,8 +256,8 @@ def ObjDetectImg(img, layer_names, net):
 
         print('[CALC] Polar Co-ords of focused object is {:.6f} < {:.6f}'.format(rho, phi*180/pi))
 
-        #cv2.imshow("Focused object", focus)
-        #cv2.imshow('Detections', color_image)
+        cv2.imshow("Focused object", focus)
+        cv2.imshow('Detections', color_image)
         
         return(x, y, w, h, rho)
 
@@ -375,6 +375,8 @@ else: #if NO image has been parsed, we want to do webcam
     pipeline = rs.pipeline()
     config = rs.config()
     config.enable_stream(rs.stream.color, 640, 480, rs.format.bgr8, 30)
+    config.enable_stream(rs.stream.depth, 640, 480, rs.format.bgr8, 30)
+
     # Start streaming
     pipeline.start(config)
     
@@ -386,17 +388,19 @@ else: #if NO image has been parsed, we want to do webcam
             color_frame = frames.get_color_frame()
             #depth_frame = frames.get_depth_frame()
             color_image = np.asanyarray(color_frame.get_data())
-            depth_image = np.asanyarray(depth_frame.get_data())
+            #depth_image = np.asanyarray(depth_frame.get_data())
+
+            cv2.imshow('RealSense', color_image)
 
             (h, w, c) = color_image.shape #get height width and channels
            
 
             start = time.time()
 
-            x, y, w, h, rho = ObjDetectImg(color_image, layer_names, net)
+            # x, y, w, h, rho = ObjDetectImg(color_image, layer_names, net)
 
             img = color_image
-            crop = img[y:y+h, x:x+w]
+            crop = img#[y:y+h, x:x+w]
             
             # Convert image to hsv
             hsv = cv2.cvtColor(crop, cv2.COLOR_BGR2HSV) 
@@ -428,17 +432,16 @@ else: #if NO image has been parsed, we want to do webcam
             #p.stdin.write(cmd)
             #p.stdin.flush()
             end = time.time()
-            seconds = start - end
+            seconds = end - start
             print("[INFO]: ", seconds, "time taken.")
 
             #cv2.imshow("ori", img)
             
-            cv2.namedWindow('RealSense', cv2.WINDOW_AUTOSIZE)
-            cv2.imshow('RealSense', color_image)
+         
 
 
     except KeyboardInterrupt:
         # Stop streaming
-        print("\n [INFO]: Closing...")
+        print("\n[INFO]: Closing...")
         pipeline.stop()
         cv2.destroyAllWindows()
