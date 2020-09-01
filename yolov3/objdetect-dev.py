@@ -384,7 +384,10 @@ else: #if NO image has been parsed, we want to do webcam
 
             frames = pipeline.wait_for_frames()
             color_frame = frames.get_color_frame()
+            #depth_frame = frames.get_depth_frame()
             color_image = np.asanyarray(color_frame.get_data())
+            depth_image = np.asanyarray(depth_frame.get_data())
+
             (h, w, c) = color_image.shape #get height width and channels
            
 
