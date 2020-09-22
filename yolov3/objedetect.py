@@ -1,6 +1,3 @@
-#Commands: 0 = wait, 1 = scan, 2 = servo, 3  = rotate
-
-#import pyrealsense2 as rs
 import numpy as np
 import cv2
 import argparse
@@ -169,106 +166,11 @@ def getOrientation(pts, img):
 
     return(focus, focusX, focusY)
 
-def ObjDetectImg(img, layer_names, net):
-
-    #get indiv colours for each class
-    np.random.seed(42)
-    colors = np.random.uniform(0, 255, size=(len(LABELS), 3)) #make a colour for each class
-
-    layer_names = net.getLayerNames()
-    layer_names = [layer_names[i[0] - 1] for i in net.getUnconnectedOutLayers()]
-
-    color_image = img
-    #get img dimensions
-    (h, w, c) = color_image.shape
-
-    blob = cv2.dnn.blobFromImage(color_image, 1/255, (416, 416),
-                swapRB=True, crop=False) #make a blob
-
-    net.setInput(blob)
-    start = time.time()
-
-    outs = net.forward(layer_names)
-    end = time.time()
-
-    print("[INFO] YOLO took {:.6f} seconds".format(end - start))
-
-
-    class_ids = []
-    confidences = []
-    boxes = []
-    resultant = []
-    posVal = []
-
-    #------------------- LOOP OVER DETECTIONS -------------------#
-
-    for out in outs:
-        for detection in out:
-            scores = detection[5:]
-            class_id = np.argmax(scores)
-            confidence = scores[class_id]
-
-            if confidence > 0.7:
-            #object detected!!!!
-                box = detection[0:4] * np.array([w, h, w, h])
-                (centerX, centerY, width, height) = box.astype("int")
-                posVal.append([centerX-320, centerY-240])
-                # Rectangle coordinates
-                x = int(centerX - width / 2)
-                y = int(centerY - height / 2)
-
-                resultant.append(sqrt((centerX-320)**2 + (centerY-240)**2)) 
-                #note ^ opencv pixel co-ords are form top corner, therefore by subtracting 
-                # the middle of the frame we change the reference from the corner to the middle.
-
-                boxes.append([x, y, int(width), int(height)])
-                confidences.append(float(confidence))
-                class_ids.append(class_id)
-
-    indexes = cv2.dnn.NMSBoxes(boxes, confidences, 0.5, 0.4)
-    font = cv2.FONT_HERSHEY_PLAIN
-    for i in range(len(boxes)):
-        if (i in indexes) and (class_ids[i] == 46): #class id of 46 is banana, could also be LABELS(class_ids[i]) == "banana":
-            x, y, w, h = boxes[i]
-            label = str(LABELS[class_ids[i]])
-            color = colors[i]
-            cv2.rectangle(color_image, (x, y), (x + w, y + h), color, 2)
-            text = "{}: {:.4f}".format(LABELS[class_ids[i]], confidences[i])
-
-            cv2.putText(color_image, text, (x, y + 30), font, 3, color, 3)
-
-    #------------------- IDENTIFY BANANA WE WANT TO GO FOR -------------------#
-    if resultant is not None:
-        focus = img
-
-        focusedIndex = resultant.index(min(resultant)) #this returns the index of the object that we want to focus
-        focusX, focusY = posVal[focusedIndex] #get the centre co-ords for the focused object
-        rho, phi = cart2pol(focusX,focusY) #convert to polar co-ords
-        cv2.line(focus, (focusX+320,focusY+240), (320,240), (0,0,0)) #draw a line on the image from the centre of the frame to the centre of the focused box
-
-        x, y, w, h = boxes[focusedIndex]
-        label = str(LABELS[class_ids[focusedIndex]])
-        color = colors[focusedIndex]
-        cv2.rectangle(focus, (x, y), (x + w, y + h), color, 2)
-        text = "{}: {:.4f}".format(LABELS[class_ids[focusedIndex]], confidences[focusedIndex])
-
-        cv2.putText(focus, text, (x, y + 30), font, 3, color, 3)
-
-        print('[CALC] Polar Co-ords of focused object is {:.6f} < {:.6f}'.format(rho, phi*180/pi))
-        
-        return(x, y, w, h, rho)
-
 
 #-------------------------------------------------#    
 #------------------- CONFIG ----------------------#
 #-------------------------------------------------#
 
-
-ap = argparse.ArgumentParser()
-ap.add_argument("-i", "--image", required=False,
-	help="path to input image")
-
-args = vars(ap.parse_args())
 
 print("[INFO] Python script is running..")
 print("[INFO] Opening C Program...")
@@ -303,100 +205,109 @@ layer_names = [layer_names[i[0] - 1] for i in net.getUnconnectedOutLayers()]
 #------------------- DETECTION -------------------#
 #-------------------------------------------------#
 
+pipeline = rs.pipeline()
+config = rs.config()
+config.enable_stream(rs.stream.color, 640, 480, rs.format.bgr8, 30)
+config.enable_stream(rs.stream.depth, 640, 480, rs.format.z16, 30)
 
-if args["image"] is not None:
+# Start streaming
+pipeline.start(config)
 
-    image_path = args["image"]
-    img = cv2.imread(image_path)
-    img = cv2.resize(img, (640,480))
 
-    x, y, w, h, rho = ObjDetectImg(img, layer_names, net)
+try:
+    while True:
 
-    if rho > 50:
-        print("[RESULT] Command 1, servo to object...")
-        cmd = "2 {x} {y}\n".encode(encoding='UTF-8')
-        p.stdin.write(cmd)
-        p.stdin.flush()
+        frames = pipeline.wait_for_frames()
+        color_frame = frames.get_color_frame()
+        depth_frame = frames.get_depth_frame()
+        color_image = np.asanyarray(color_frame.get_data())
+        depth_image = np.asanyarray(depth_frame.get_data())
 
-    else: 
-        print("[RESULT] End effector is above object, computing orientation")
+        cv2.imshow('RealSense', color_image)
+
+        (h, w, c) = color_image.shape #get height width and channels
         
 
-        #first we want to crop our image to the bounding box of the focused object
-        #this will make sure we only get one orientation reading.
-        
-         #------------------- NOW WE FIND ORIENTATION -------------------#
         start = time.time()
 
-        img = cv2.imread(image_path)
-        img = cv2.resize(img, (640,480))
-        crop = img[y:y+h, x:x+w]
-        # Convert image to hsv
-        hsv = cv2.cvtColor(crop, cv2.COLOR_BGR2HSV) 
-        #lets get some values for our hsv thresholds, what colours should we play between?
+         blob = cv2.dnn.blobFromImage(color_image, 1/255, (416, 416),
+                swapRB=True, crop=False) #make a blob
 
-        weaker = np.array([20, 100, 100]) #kind of a pale yellow colour
-        stronger = np.array([30, 255, 255]) #strong, vibrant yellow.
+        net.setInput(blob)
+        start = time.time()
 
-        #make a mask
-
-        mask = cv2.inRange(hsv, weaker, stronger) 
-        contours, _ = cv2.findContours(mask, cv2.RETR_LIST, cv2.CHAIN_APPROX_NONE) #mask to bw if using
-
-        for i, c in enumerate(contours):
-            # Calculate the area of each contour
-            area = cv2.contourArea(c)
-            # Ignore contours that are too small or too large
-            if area < 1e3 or 1e5 < area:
-                continue
-
-            #   Draw each contour only for visualisation purposes
-            cv2.drawContours(crop, contours, i, (0, 0, 255), 2)
-            # Find the orientation of each shape
-            angle = getOrientation(c, crop)
-            print("Orientation is", angle*(180/pi))
-
-        cmd = "3 {:.3f}#".format(angle)
-        cmd = cmd.encode(encoding='UTF-8')
-        p.stdin.write(cmd)
-        p.stdin.flush()
+        outs = net.forward(layer_names)
         end = time.time()
-        print("[INFO] Orientation calc took {:.6f} seconds".format(end - start))
-        cv2.imshow("ori", img)
-       
+
+        print("[INFO] YOLO took {:.6f} seconds".format(end - start))
 
 
-    cv2.waitKey()
-    cv2.destroyAllWindows()
-    p.kill()
+        class_ids = []
+        confidences = []
+        boxes = []
+        resultant = []
+        posVal = []
 
-else: #if NO image has been parsed, we want to do webcam
-    pipeline = rs.pipeline()
-    config = rs.config()
-    config.enable_stream(rs.stream.color, 640, 480, rs.format.bgr8, 30)
-    config.enable_stream(rs.stream.depth, 640, 480, rs.format.z16, 30)
+        #------------------- LOOP OVER DETECTIONS -------------------#
 
-    # Start streaming
-    pipeline.start(config)
-    
+        for out in outs:
+            for detection in out:
+                scores = detection[5:]
+                class_id = np.argmax(scores)
+                confidence = scores[class_id]
 
-    try:
-        while True:
+                if confidence > 0.7:
+                #object detected!!!!
+                    box = detection[0:4] * np.array([w, h, w, h])
+                    (centerX, centerY, width, height) = box.astype("int")
+                    posVal.append([centerX-320, centerY-240])
+                    # Rectangle coordinates
+                    x = int(centerX - width / 2)
+                    y = int(centerY - height / 2)
 
-            frames = pipeline.wait_for_frames()
-            color_frame = frames.get_color_frame()
-            #depth_frame = frames.get_depth_frame()
-            color_image = np.asanyarray(color_frame.get_data())
-            #depth_image = np.asanyarray(depth_frame.get_data())
+                    resultant.append(sqrt((centerX-320)**2 + (centerY-240)**2)) 
+                    #note ^ opencv pixel co-ords are form top corner, therefore by subtracting 
+                    # the middle of the frame we change the reference from the corner to the middle.
 
-            cv2.imshow('RealSense', color_image)
+                    boxes.append([x, y, int(width), int(height)])
+                    confidences.append(float(confidence))
+                    class_ids.append(class_id)
 
-            (h, w, c) = color_image.shape #get height width and channels
-           
+        indexes = cv2.dnn.NMSBoxes(boxes, confidences, 0.5, 0.4)
+        font = cv2.FONT_HERSHEY_PLAIN
+        for i in range(len(boxes)):
+            if (i in indexes) and (class_ids[i] == 46): #class id of 46 is banana, could also be LABELS(class_ids[i]) == "banana":
+                x, y, w, h = boxes[i]
+                label = str(LABELS[class_ids[i]])
+                color = colors[i]
+                cv2.rectangle(color_image, (x, y), (x + w, y + h), color, 2)
+                text = "{}: {:.4f}".format(LABELS[class_ids[i]], confidences[i])
 
-            start = time.time()
+                cv2.putText(color_image, text, (x, y + 30), font, 3, color, 3)
 
-            x, y, w, h, rho = ObjDetectImg(color_image, layer_names, net)
+        #------------------- IDENTIFY BANANA WE WANT TO GO FOR -------------------#
+        if resultant is not None:
+            focus = img
+
+            focusedIndex = resultant.index(min(resultant)) #this returns the index of the object that we want to focus
+            focusX, focusY = posVal[focusedIndex] #get the centre co-ords for the focused object
+            rho, phi = cart2pol(focusX,focusY) #convert to polar co-ords
+            cv2.line(focus, (focusX+320,focusY+240), (320,240), (0,0,0)) #draw a line on the image from the centre of the frame to the centre of the focused box
+
+            x, y, w, h = boxes[focusedIndex]
+            label = str(LABELS[class_ids[focusedIndex]])
+            color = colors[focusedIndex]
+            cv2.rectangle(focus, (x, y), (x + w, y + h), color, 2)
+            text = "{}: {:.4f}".format(LABELS[class_ids[focusedIndex]], confidences[focusedIndex])
+
+            cv2.putText(focus, text, (x, y + 30), font, 3, color, 3)
+
+            print('[CALC] Polar Co-ords of focused object is {:.6f} < {:.6f}'.format(rho, phi*180/pi))
+
+            cv2.imshow("Focused object", focus)
+            cv2.imshow('Detections', color_image)
+            
+            return(x, y, w, h, rho)
 
             img = color_image
             crop = img#[y:y+h, x:x+w]
@@ -436,7 +347,7 @@ else: #if NO image has been parsed, we want to do webcam
 
             #cv2.imshow("ori", img)
             
-         
+        
 
 
     except KeyboardInterrupt:

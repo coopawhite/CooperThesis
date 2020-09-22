@@ -80,8 +80,8 @@ cv2.imshow('HSV', hsv)
 
 #lets get some values for our hsv thresholds, what colours should we play between?
 
-weaker = np.array([20, 100, 100]) #kind of a pale yellow colour
-stronger = np.array([30, 255, 255]) #strong, vibrant yellow.
+weaker = np.array([6, 81, 93]) #kind of a pale yellow colour
+stronger = np.array([46, 212, 245]) #strong, vibrant yellow.
 
 #make a mask
 

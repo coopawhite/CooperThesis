@@ -37,6 +37,8 @@ try:
         blob = cv2.dnn.blobFromImage(cv2.resize(color_image, (416, 416)), 0.007843, (416, 416), 127.5) #make a blob
 
         net.setInput(blob)
+        net.setPreferableBackend(cv2.dnn.DNN_BACKEND_CUDA)
+        net.setPreferableTarget(cv2.dnn.DNN_TARGET_CUDA)
         outs = net.forward(output_layers)
 
 
