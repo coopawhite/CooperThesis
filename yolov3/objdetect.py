@@ -1,4 +1,5 @@
 import numpy as np
+import statistics
 import cv2
 import argparse
 import time
@@ -10,52 +11,6 @@ from math import atan2, cos, sin, sqrt, pi
 #------------------------------------------------#
 #--------------- FUNCTION DEFS ------------------#
 #------------------------------------------------#
-
-def non_max_suppression_fast(boxes, overlapThresh):
-	# if there are no boxes, return an empty list
-	if len(boxes) == 0:
-		return []
-	# if the bounding boxes integers, convert them to floats --
-	# this is important since we'll be doing a bunch of divisions
-	if boxes.dtype.kind == "i":
-		boxes = boxes.astype("float")
-	# initialize the list of picked indexes	
-	pick = []
-	# grab the coordinates of the bounding boxes
-	x1 = boxes[:,0]
-	y1 = boxes[:,1]
-	x2 = boxes[:,2]
-	y2 = boxes[:,3]
-	# compute the area of the bounding boxes and sort the bounding
-	# boxes by the bottom-right y-coordinate of the bounding box
-	area = (x2 - x1 + 1) * (y2 - y1 + 1)
-	idxs = np.argsort(y2)
-	# keep looping while some indexes still remain in the indexes
-	# list
-	while len(idxs) > 0:
-		# grab the last index in the indexes list and add the
-		# index value to the list of picked indexes
-		last = len(idxs) - 1
-		i = idxs[last]
-		pick.append(i)
-		# find the largest (x, y) coordinates for the start of
-		# the bounding box and the smallest (x, y) coordinates
-		# for the end of the bounding box
-		xx1 = np.maximum(x1[i], x1[idxs[:last]])
-		yy1 = np.maximum(y1[i], y1[idxs[:last]])
-		xx2 = np.minimum(x2[i], x2[idxs[:last]])
-		yy2 = np.minimum(y2[i], y2[idxs[:last]])
-		# compute the width and height of the bounding box
-		w = np.maximum(0, xx2 - xx1 + 1)
-		h = np.maximum(0, yy2 - yy1 + 1)
-		# compute the ratio of overlap
-		overlap = (w * h) / area[idxs[:last]]
-		# delete all indexes from the index list that have
-		idxs = np.delete(idxs, np.concatenate(([last],
-			np.where(overlap > overlapThresh)[0])))
-	# return only the bounding boxes that were picked using the
-	# integer data type
-	return boxes[pick].astype("int")
 
 def cart2pol(x, y):
     rho = np.sqrt(x**2 + y**2)
@@ -158,6 +113,7 @@ layer_names = [layer_names[i[0] - 1] for i in net.getUnconnectedOutLayers()]
 #set up stream
 pipeline = rs.pipeline()
 config = rs.config()
+
 config.enable_stream(rs.stream.color, 1280, 720, rs.format.bgr8, 30)
 config.enable_stream(rs.stream.depth, 1280, 720, rs.format.z16, 30)
 
@@ -169,43 +125,43 @@ depth_sensor = profile.get_device().first_depth_sensor()
 depth_scale = depth_sensor.get_depth_scale()
 print("Depth Scale is: " , depth_scale)
 
-
 # Create an align object
 # rs.align allows us to perform alignment of depth frames to others frames
 # The "align_to" is the stream type to which we plan to align depth frames.
 align_to = rs.stream.depth
 align = rs.align(align_to)
 
-dec_filter = rs.decimation_filter()   # Decimation - reduces depth frame density
-spat_filter = rs.spatial_filter()          # Spatial    - edge-preserving spatial smoothing
-temp_filter = rs.temporal_filter()    # Temporal   - reduces temporal noise
+totalFrames = 0
+posFrames = 0
+RunningTime = 0
+
 try:
     while True:
 
+        print(posFrames, totalFrames)
         start = time.time() #We want to see how long each iteration takes
 
-        
+        totalFrames += 1
 
         frames = pipeline.wait_for_frames()
         aligned_frames = align.process(frames)
-       
-        # Get aligned frames
-        aligned_depth_frame = aligned_frames.get_depth_frame() # aligned_depth_frame is a 640x480 depth image
-        color_frame = aligned_frames.get_color_frame()
 
+        color_frame = frames.get_color_frame()
         color_image = np.asanyarray(color_frame.get_data())
 
-        aligned_depth_frame = dec_filter.process(aligned_depth_frame)
-        aligned_depth_frame = spat_filter.process(aligned_depth_frame)
-        aligned_depth_frame = temp_filter.process(aligned_depth_frame)
-        aligned_depth_frame = aligned_depth_frame.as_depth_frame()
-        depth_image = np.asanyarray(aligned_depth_frame.get_data())
-       
-        depth_colormap = cv2.applyColorMap(cv2.convertScaleAbs(depth_image, alpha=0.03), cv2.COLORMAP_JET)        # Validate that both frames are valid
-        if not aligned_depth_frame or not color_frame:
+        depth_frame = aligned_frames.get_depth_frame()
+        depth_image = np.asanyarray(depth_frame.get_data())
+
+        if not depth_frame or not color_frame:
             continue
 
-       
+        # Getting intrinsics and extrinsics of the camera
+
+        depth_intrin = depth_frame.profile.as_video_stream_profile().intrinsics
+        color_intrin = color_frame.profile.as_video_stream_profile().intrinsics
+        depth_to_color_extrin = depth_frame.profile.get_extrinsics_to(color_frame.profile)
+
+
         # Copy across all the images we use for visualisation
         detection_img = np.copy(color_image)
         focus = np.copy(color_image)
@@ -232,7 +188,8 @@ try:
         boxes = []
         resultant = []
         posVal = []
-        dist = 0.00
+        temp = 0.00
+        
 
         #------------------- LOOP OVER DETECTIONS -------------------#
 
@@ -276,6 +233,7 @@ try:
 
         #------------------- IDENTIFY OBJECT WE WANT TO GO FOR -------------------#
         if len(resultant)>0:
+            posFrames += 1
             focusedIndex = resultant.index(min(resultant)) #this returns the index of the object that we want to focus
             focusX, focusY = posVal[focusedIndex] #get the centre co-ords for the focused object
             rho, phi = cart2pol(focusX,focusY) #convert to polar co-ords
@@ -292,18 +250,17 @@ try:
 
             # We want to know the depth of the object, lets find trhe average depth of all depth readings within the detection box, this should be pretty reliable.
             try:
-                temp = aligned_depth_frame.get_distance(x,y)
+                xpixel = int(x + w/2)
+                ypixel = int(y + h/2)
+                print(xpixel, ypixel)
+                depth = depth_frame.get_distance(xpixel, ypixel)
+                depth_point = rs.rs2_deproject_pixel_to_point(depth_intrin ,[xpixel, ypixel], depth)
+                print(depth_point)
                 pass
             except RuntimeError as err:
                 print(err)
                 pass
-                    
-            if temp is not 0.00:
-                dist = temp
-                xcart, ycart = deproject_pixel_to_point((x,y), dist)
-                print('[INFO]: Object is located at [{:.3f}, {:.3f}, {:.3f}].'.format(xcart, ycart, dist))
-
-
+            
             
             #---------- HSV MASKING -----------#
 
@@ -351,10 +308,33 @@ try:
                 #p.stdin.write(cmd)
                 #p.stdin.flush()
           
-            end = time.time()
+        end = time.time()
 
-            print("[INFO]: Program took {:.6f} seconds".format(end - start))
-            print('\n -----------------------------\n')
+
+        RunningTime = RunningTime + (end - start)
+        print("[INFO]: Program took {:.6f} seconds".format(end - start))
+        print('\n -----------------------------\n')
+
+
+       
+
+
+        if RunningTime >= 10:
+
+            print('---------------------------------------------')
+            print('-------------WRITING TO FILE-----------------')
+            print('---------------------------------------------')
+
+            reliability = posFrames/totalFrames
+
+
+            with open('../ExperimentalData/reliabilityFrames.csv','a') as fd:
+                fd.write('\n')
+                fd.write(str(reliability))
+            
+            RunningTime = 0
+            totalFrames = 0
+            posFrames = 0
 
 
         merge_top = cv2.hconcat((color_image, detection_img))
@@ -362,13 +342,8 @@ try:
         merge = cv2.vconcat((merge_top, merge_bottom))
 
         cv2.namedWindow('Result', cv2.WINDOW_NORMAL)
-        cv2.resizeWindow('Result', 1280,960)
+        cv2.resizeWindow('Result', 1280,720)
         cv2.imshow("Result", merge)
-
-        depth_colormap = cv2.applyColorMap(cv2.convertScaleAbs(depth_image, alpha=0.03), cv2.COLORMAP_JET)
-
-        cv2.namedWindow('Stream', cv2.WINDOW_AUTOSIZE)
-        cv2.imshow("Stream", depth_colormap)
 
         #cv2.namedWindow('Detections', cv2.WINDOW_AUTOSIZE)
         #cv2.imshow('Detections', detection_img)
@@ -382,6 +357,7 @@ try:
 
 except KeyboardInterrupt:
     # Stop streaming
+
     print("\n[INFO]: Closing...")
     pipeline.stop()
     cv2.destroyAllWindows()
